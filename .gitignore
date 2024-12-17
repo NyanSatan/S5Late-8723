@@ -1,0 +1,6 @@
+.DS_Store
+*.o
+*.elf
+*.a
+*.bak
+hook.h

