@@ -10,6 +10,7 @@ Implementation of [S5Late exploit](https://github.com/m-gsch/S5Late) by **@__gsc
 * Decrypt Image1-wrapped firmwares
     * ...as well as decrypt/encrypt arbitrary data with embedded GID key
 * Boot custom 2nd-stage images
+* Call arbitrary functions in the ROM
 
 I only tested this on a M4 Max MacBook Pro & MacBook 12-inch, but given that it doesn't use any special USB haxx, it should run anywhere
 
@@ -141,3 +142,4 @@ This is a preliminary version of this exploit, so be careful with results yielde
 
 * @__gsch - for the original bug & exploit
 * q3k - for sharing a lot of research on iPod bootroms and helping me
+* CUB3D - for `ipod_sun` exploit chain which was used to make SRAM dump

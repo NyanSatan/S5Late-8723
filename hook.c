@@ -26,6 +26,7 @@ typedef enum {
     kHookCommandDump = 'dump',
     kHookCommandAESEncrypt = 'aese',
     kHookCommandAESDecrypt = 'aesd',
+    kHookCommandCall = 'func'
 } hook_cmd_t;
 
 __attribute__((packed)) struct cmd {
@@ -78,6 +79,27 @@ int hook(void **state) {
             int off = iv_hack ? 0x10 /* AES block size */ : 0x0;
 
             memcpy(dest, buf + off, len - off);
+            break;
+        }
+
+        case kHookCommandCall: {
+            void *func = (void *)cmd->args[0];
+            uint32_t *args = &cmd->args[1];
+
+            uint32_t (*tramp)(...) = func;
+
+            uint32_t ret = tramp(
+                args[0],
+                args[1],
+                args[2],
+                args[3],
+                args[4],
+                args[5],
+                args[6],
+                args[7]
+            );
+
+            memcpy(*state, &ret, sizeof(ret));
             break;
         }
 

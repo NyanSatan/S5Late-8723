@@ -22,6 +22,7 @@ COMMAND_RESET  = 0x72657374   # 'rest'
 COMMAND_DUMP   = 0x64756D70   # 'dump'
 COMMAND_AESDEC = 0x61657364   # 'aesd'
 COMMAND_AESENC = 0x61657365   # 'aese'
+COMMAND_CALL   = 0x66756E63   # 'func'
 
 AES_BLOCK_SIZE = 16
 AES_KEY_GID = 1
@@ -489,15 +490,19 @@ def do_image1(args):
 
     dev.close()
 
-def do_reboot(args):
+def do_call(args):
+    if len(args.args) > 8:
+        print("too many arguments")
+        exit(-1)
+
     dev = device_open()
 
-    try:
-        cmd_send(dev, cmd_encode(COMMAND_RESET))
-    except Exception:
-        pass
+    cmd = cmd_encode(COMMAND_CALL, args.addr, *args.args)
+    raw_ret = cmd_send(dev, cmd, 4)
+    ret = int.from_bytes(raw_ret, "little")
 
-    dev.usb_reset()
+    print("returned: 0x%x" % ret)
+
     dev.close()
 
 def do_boot(args):
@@ -510,11 +515,18 @@ def do_boot(args):
     dev.send_data(in_buf)
     dev.clrstatus()
 
-    try:
+    with suppress(usb.core.USBError):
         dev.upload()
-    except Exception:
-        pass
 
+    dev.close()
+
+def do_reboot(args):
+    dev = device_open()
+
+    with suppress(usb.core.USBError):
+        cmd_send(dev, cmd_encode(COMMAND_RESET))
+
+    dev.usb_reset()
     dev.close()
 
 def hexint(str) -> int:
@@ -544,6 +556,11 @@ def main():
     image1_parse.set_defaults(func=do_image1)
     image1_parse.add_argument("input", help="input file")
     image1_parse.add_argument("output", help="output file")
+
+    call_parse = subparsers.add_parser("call", help="call arbitrary function")
+    call_parse.set_defaults(func=do_call)
+    call_parse.add_argument("-f", "--addr", type=hexint, help="function pointer")
+    call_parse.add_argument("-a", "--args", type=hexint, nargs='*', help="arguments (up to 8)")
 
     boot_parse = subparsers.add_parser("boot", help="boot WTF from file")
     boot_parse.set_defaults(func=do_boot)
