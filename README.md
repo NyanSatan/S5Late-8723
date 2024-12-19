@@ -4,7 +4,11 @@
 
 ***Important note** (2): although this code is unlikely to permanently break anything, you still should be very careful. I'm not responsible for any possible damage this might cause*
 
-Implementation of [S5Late exploit](https://github.com/m-gsch/S5Late) by **@__gsch** for S5L8723 SoC which is used in iPod nano 6. It allows you to:
+Implementation of [S5Late exploit](https://github.com/m-gsch/S5Late) by **@__gsch** for S5L8723 SoC which is used in iPod nano 6
+
+Now also for S5L8443 SoC used in iPod shuffle 4
+
+It allows you to:
 
 * Dump arbitrary memory
 * Decrypt Image1-wrapped firmwares
@@ -17,7 +21,9 @@ I only tested this on a M4 Max MacBook Pro & MacBook 12-inch, but given that it 
 ## How to run
 ### Prerequisites
 
-* iPod nano 6
+* iPod nano 6 or iPod shuffle 4
+    * ...for the shuffle you also need an IPSW
+        * Available [here](https://theapplewiki.com/wiki/Firmware/iPod#iPod_shuffle_(4th_generation)) - make sure to pick one for correct hardware revision
 
 * Python 3
     * `pyusb` is the only external dependency
@@ -25,7 +31,23 @@ I only tested this on a M4 Max MacBook Pro & MacBook 12-inch, but given that it 
 
 ### Entering DFU on iPod nano 6
 
-Press and hold volume down and power buttons at the same time until Apple logo appears. Keep holding until screen goes black + 1-2 seconds
+Press and hold volume down and power buttons at the same time until Apple logo appears. Keep holding until screen goes black + 1-2 seconds more
+
+### Entering DFU on iPod shuffle 4
+
+iPod shuffles do not seem to recognize any button combinations to enter DFU
+
+The only way to do it is flashing a firmware with broken 2nd-stage bootloader:
+
+1. Download an IPSW linked above
+2. Unzip it
+3. Open `Bootloader.rb3` in a hex-editor and replace a random byte or 2 somewhere in a middle of the file
+4. ZIP it back and rename file extension to `.ipsw`
+5. Flash the resulting file into your iPod with Finder
+6. At some point it will fail or get stuck
+7. Unplug the iPod
+
+### Common DFU caveats
 
 As soon as Finder/iTunes detects an iPod in DFU mode, it will try to download a recovery image and upload **WTF** from it
 
@@ -53,11 +75,13 @@ USB DFU Device:
 When your iPod is in DFU mode, just run the following:
 
 ```
-➜  S5Late-8723 git:(master) ✗ ./S5Late pwn                                                                           
+➜  S5Late-8723 git:(master) ✗ ./S5Late pwn
+found: S5L8723 USB DFU device
+found: S5L8723 USB pwnDFU device
 DONE
 ```
 
-You know it reached pwned DFU mode if you see this on USB:
+You know it reached pwned DFU mode if you see something like this on USB:
 
 ```
 S5L8723 pwnDFU:
@@ -74,7 +98,7 @@ S5L8723 pwnDFU:
   Extra Operating Current (mA):	0
 ```
 
-Device name is now changed to `S5L8723 pwnDFU`
+Device name is now changed to `S5L8723 pwnDFU` on iPod nano 6 or `S5L8443 pwnDFU` on iPod shuffle 4
 
 ### Sample operations
 
@@ -82,6 +106,7 @@ Dumping ROM:
 
 ```
 ➜  S5Late-8723 git:(master) ✗ ./S5Late dump /tmp/rom.bin 0x20000000 0x10000
+found: S5L8723 USB pwnDFU device
 dumping: 100%
 succesfully dumped 65536 bytes in 4.958 seconds (13218.303 bytes/sec)
 DONE
@@ -91,6 +116,7 @@ Dumping SRAM:
 
 ```
 ➜  S5Late-8723 git:(master) ✗ ./S5Late dump /tmp/sram.bin 0x22000000 0x30000
+found: S5L8723 USB pwnDFU device
 dumping: 100%
 succesfully dumped 196608 bytes in 14.851 seconds (13239.106 bytes/sec)
 DONE
@@ -100,6 +126,7 @@ Decrypting Image1:
 
 ```
 ➜  S5Late-8723 git:(master) ✗ ./S5Late image1 N20.bootloader.release.rb3 /tmp/n20_boot.bin
+found: S5L8723 USB pwnDFU device
 Image1 v2.0 (8723): type: 0x3 entry: 0x0 bodylen: 0x23b00 datalen: 0x24763 certoff: 0x23b80 certlen: 0xbe3
 decrypting: 100%
 succesfully decrypted 146176 bytes in 15.299 seconds (9554.336 bytes/sec)
@@ -109,7 +136,8 @@ DONE
 Rebooting back into normal DFU:
 
 ```
-➜  S5Late-8723 git:(master) ✗ ./S5Late reboot                                                                           
+➜  S5Late-8723 git:(master) ✗ ./S5Late reboot
+found: S5L8723 USB pwnDFU device                                                
 DONE
 ```
 
@@ -117,6 +145,7 @@ Booting a 2nd-stage bootloader:
 
 ```
 ➜  S5Late-8723 git:(master) ✗ ./S5Late boot /tmp/n20_wtf.bin
+found: S5L8723 USB pwnDFU device
 DONE
 ```
 
@@ -138,8 +167,11 @@ This is a preliminary version of this exploit, so be careful with results yielde
 
 * Current implementation only boots EFI images, but this can be fixed very easily by modifying the hook code
 
+* iPod shuffle 4 fails to boot WTF for some unobvious reason
+    * Untethered bootloader seems to work fine though
+
 ## Credits
 
 * @__gsch - for the original bug & exploit
 * q3k - for sharing a lot of research on iPod bootroms and helping me
-* CUB3D - for `ipod_sun` exploit chain which was used to make SRAM dump
+* CUB3D - for `ipod_sun` exploit chain which was used to make SRAM dump of iPod nano 6

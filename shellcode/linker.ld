@@ -1,6 +1,6 @@
+/* stolen from @xerub */
 OUTPUT_FORMAT("elf32-littlearm")
 OUTPUT_ARCH(arm)
-STARTUP(start.o)
 ENTRY(_start)
 SECTIONS {
     .text : {

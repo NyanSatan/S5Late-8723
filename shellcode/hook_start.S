@@ -7,5 +7,6 @@
 .arm
 .type	_start, %function
 
+@ fuck gcc
 _start:
     b hook
