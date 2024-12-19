@@ -165,10 +165,11 @@ This is a preliminary version of this exploit, so be careful with results yielde
 
 * Apparently padding in AES operations isn't handled properly, so for inputs not aligned to 16 bytes (AES block size) it might yield some garbage in the end of an output
 
-* Current implementation only boots EFI images, but this can be fixed very easily by modifying the hook code
+* Current implementation only boots EFI images on S5L8273 and `0B0000EA` reset vector instruction on S5L8443
+    * This can be fixed very easily by modifying the hook code
 
-* iPod shuffle 4 fails to boot WTF for some unobvious reason
-    * Untethered bootloader seems to work fine though
+* <s>iPod shuffle 4 fails to boot WTF for some unobvious reason</s> - apparently works now
+    * <s>Untethered bootloader seems to work fine though</s>
 
 ## Credits
 

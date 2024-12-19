@@ -575,8 +575,16 @@ def do_boot(args):
     with open(args.file, "rb") as f:
         in_buf = f.read()
 
+    # this hopefully fixes booting issues caused by image not being copied completely
+    in_buf += b"\x00" * (DNLD_MAX_PACKET_SIZE - len(in_buf) % DNLD_MAX_PACKET_SIZE)
+
     dev.clrstatus()
-    dev.send_data(in_buf)
+    pkt = dev.send_data(in_buf)
+
+    dev.dnload(None, pkt)
+    status = dev.getstatus()
+    assert status == USBDFUStatus.dfuManifestSync.value
+
     dev.clrstatus()
 
     with suppress(usb.core.USBError):
