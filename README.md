@@ -6,7 +6,7 @@
 
 Implementation of [S5Late exploit](https://github.com/m-gsch/S5Late) by **@__gsch** for S5L8723 SoC which is used in iPod nano 6
 
-Now also for S5L8443 SoC used in iPod shuffle 4
+Now also for S5L8443 SoC (iPod shuffle 4) & S5L8740 (iPod nano 7)
 
 It allows you to:
 
@@ -21,7 +21,7 @@ I only tested this on a M4 Max MacBook Pro & MacBook 12-inch, but given that it 
 ## How to run
 ### Prerequisites
 
-* iPod nano 6 or iPod shuffle 4
+* iPod nano 6 or iPod nano 7 or iPod shuffle 4
     * ...for the shuffle you also need an IPSW
         * Available [here](https://theapplewiki.com/wiki/Firmware/iPod#iPod_shuffle_(4th_generation)) - make sure to pick one for correct hardware revision
 
@@ -32,6 +32,10 @@ I only tested this on a M4 Max MacBook Pro & MacBook 12-inch, but given that it 
 ### Entering DFU on iPod nano 6
 
 Press and hold volume down and power buttons at the same time until Apple logo appears. Keep holding until screen goes black + 1-2 seconds more
+
+### Entering DFU on iPod nano 7
+
+Same as nano 6, but hold Home button instead of volume down
 
 ### Entering DFU on iPod shuffle 4
 
@@ -98,7 +102,7 @@ S5L8723 pwnDFU:
   Extra Operating Current (mA):	0
 ```
 
-Device name is now changed to `S5L8723 pwnDFU` on iPod nano 6 or `S5L8443 pwnDFU` on iPod shuffle 4
+Device name is now changed to `S5L8xxx pwnDFU` (where `xxx` depends on the target platform)
 
 ### Sample operations
 
@@ -175,4 +179,4 @@ This is a preliminary version of this exploit, so be careful with results yielde
 
 * @__gsch - for the original bug & exploit
 * q3k - for sharing a lot of research on iPod bootroms and helping me
-* CUB3D - for `ipod_sun` exploit chain which was used to make SRAM dump of iPod nano 6
+* CUB3D - for `ipod_sun` exploit chain which was used to make SRAM dump of iPod nano 6/7

@@ -3,7 +3,7 @@
 # my satanic build system,
 # sorry in advance!
 
-PLATFORMS = ["s5l8723", "s5l8443"]
+PLATFORMS = ["s5l8723", "s5l8443", "s5l8740"]
 
 SHELLCODE_BASE = 0x2202E9C0
 HOOK_BASE = 0x22028000
