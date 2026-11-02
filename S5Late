@@ -55,6 +55,8 @@ COMMAND_DUMP   = 0x64756D70   # 'dump'
 COMMAND_AESDEC = 0x61657364   # 'aesd'
 COMMAND_AESENC = 0x61657365   # 'aese'
 COMMAND_CALL   = 0x66756E63   # 'func'
+COMMAND_READ   = 0x72643332   # 'rd32'
+COMMAND_WRITE  = 0x77723332   # 'wr32'
 
 AES_BLOCK_SIZE = 16
 AES_KEY_GID = 1
@@ -124,7 +126,7 @@ class USBDFUDevice:
             assert self.dev
         except (usb.core.USBError, AssertionError):
             raise USBDFUDeviceError("cannot open USB device - is it even connected?")
-        
+
         self._open = True
 
         # XXX do these even have any effect?
@@ -140,7 +142,7 @@ class USBDFUDevice:
 
     def dnload(self, data: bytes, block_num: int = 0):
         self.dev.ctrl_transfer(0x21, 1, block_num, 0, data, USB_TIMEOUT)
-        
+
     def upload(self, amount: int = UPLD_MAX_PACKET_SIZE) -> bytes:
         result = self.dev.ctrl_transfer(0xA1, 2, 0, 0, amount, USB_TIMEOUT)
         assert len(result) == amount
@@ -150,11 +152,11 @@ class USBDFUDevice:
         result = self.dev.ctrl_transfer(0xA1, 3, 0, 0, 6, USB_TIMEOUT)
         assert len(result) == 6
         return USBDFUState.from_raw(result)
-    
+
     def getstatus(self) -> int:
         result = self.dev.ctrl_transfer(0xA1, 5, 0, 0, 1, USB_TIMEOUT)
         return result[0]
-    
+
     def clrstatus(self):
         self.dev.ctrl_transfer(0x21, 4, 0, 0, None, USB_TIMEOUT)
 
@@ -166,7 +168,7 @@ class USBDFUDevice:
         packets = 0
         while index < len(data):
             amount = min(len(data) - index, DNLD_MAX_PACKET_SIZE)
-            
+
             self.dnload(data[index : index + amount], packets)
 
             while True:
@@ -174,7 +176,7 @@ class USBDFUDevice:
 
                 if state.error != USBDFUError.errOk.value:
                     raise ValueError("wow, we have a DFU error on download - 0x%x" % state.error)
-                
+
                 if state.status == USBDFUStatus.dfuDnloadIdle.value:
                     break
 
@@ -183,7 +185,7 @@ class USBDFUDevice:
 
             packets += 1
             index += amount
-        
+
         return packets
 
     def request_image_validation(self, packets: int):
@@ -193,7 +195,7 @@ class USBDFUDevice:
                 self.dev.ctrl_transfer(0xA1, 3, 0, 0, 6, USB_TIMEOUT)
         except usb.core.USBError:
             pass
-        
+
         self.usb_reset()
 
     def name(self):
@@ -252,11 +254,11 @@ def device_open(expect_pwned: bool = True) -> tuple[USBDFUDevice, PlatformConfig
 
     if not dev:
         raise RuntimeError("no device found")
-    
+
     pwned = device_pwned(dev, platform)
 
     print(
-        "found: %s USB %sDFU device" % 
+        "found: %s USB %sDFU device" %
         (
             platform.name,
             "pwn" if pwned else ""
@@ -308,14 +310,14 @@ def cmd_send(dev: USBDFUDevice, cmd: bytes, length: int = UPLD_MAX_PACKET_SIZE) 
 # Common code for AES operations (a bit ugly)
 def aes_op(device: USBDFUDevice, cmd: int, key: int, buffer: bytes, iv: bytes = None, callback: callable = None) -> bytes:
     start = time.perf_counter()
-    
+
     total_len = len(buffer)
 
     if total_len % AES_BLOCK_SIZE:
         raise ValueError("AES operations require 16-byte aligned input")
 
     index = 0
-    
+
     ret = bytes()
 
     while True:
@@ -386,7 +388,7 @@ def do_pwn(args):
 
     with open(Path(SHELLCODE_ROOT) / config.config / SHELLCODE_NAME, "rb") as f:
         payload = f.read()
-    
+
     payload += b"\xff" * (config.overwrite_len - STAGE0_LEN - STAGE1_LEN - len(state) - len(payload))
 
     # sending 0x780 bytes first, which is almost the limit for a single transaction (0x800)
@@ -469,7 +471,7 @@ def do_dump(args):
 
         if index >= args.length:
             break
-        
+
         amount = min(args.length - index, UPLD_MAX_PACKET_SIZE)
 
         f.write(
@@ -544,7 +546,7 @@ def do_image1(args):
     # this is probably whack and might result in garbage in the end of decrypted data
     if real_len % AES_BLOCK_SIZE:
         padded_len += AES_BLOCK_SIZE - (real_len % AES_BLOCK_SIZE)
-    
+
     f = open(args.output, "wb")
 
     def write_cb(buf: bytes, index: int, length: int):
@@ -613,6 +615,29 @@ def do_reboot(args):
     dev.usb_reset()
     dev.close()
 
+def do_read(args):
+    dev, _ = device_open()
+
+    print("reading @ 0x%08x" % args.addr)
+
+    cmd = cmd_encode(COMMAND_READ, args.addr)
+    raw_ret = cmd_send(dev, cmd, 4)
+    ret = int.from_bytes(raw_ret, "little")
+
+    print("0x%08x" % ret)
+
+    dev.close()
+
+def do_write(args):
+    dev, _ = device_open()
+
+    print("writing 0x%08x @ 0x%08x" % (args.value, args.addr))
+
+    cmd = cmd_encode(COMMAND_WRITE, args.addr, args.value)
+    cmd_send(dev, cmd, 0)
+
+    dev.close()
+
 def hexint(str) -> int:
     return int(str, 16)
 
@@ -652,6 +677,15 @@ def main():
 
     reboot_parse = subparsers.add_parser("reboot", help="reboot device")
     reboot_parse.set_defaults(func=do_reboot)
+
+    read_parse = subparsers.add_parser("read", help="read 32 bits")
+    read_parse.set_defaults(func=do_read)
+    read_parse.add_argument("addr", type=hexint, help="address to read")
+
+    write_parse = subparsers.add_parser("write", help="write 32 bits")
+    write_parse.set_defaults(func=do_write)
+    write_parse.add_argument("addr", type=hexint, help="address to write")
+    write_parse.add_argument("value", type=hexint, help="value to write")
 
     args = parser.parse_args()
     if not hasattr(args, "func"):

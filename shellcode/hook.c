@@ -33,7 +33,9 @@ typedef enum {
     kHookCommandDump = 'dump',
     kHookCommandAESEncrypt = 'aese',
     kHookCommandAESDecrypt = 'aesd',
-    kHookCommandCall = 'func'
+    kHookCommandCall = 'func',
+    kHookCommandRead32 = 'rd32',
+    kHookCommandWrite32 = 'wr32'
 } hook_cmd_t;
 
 __attribute__((packed)) struct cmd {
@@ -67,7 +69,7 @@ int hook(void **state) {
         /*
          * S5L8723 (maybe others too) seems to have problems with
          * user-supplied IVs, so we have to use an ugly workaround
-         * which lowers our poor bandwith even further
+         * which lowers our poor bandwidth even further
          *
          * I stole this hack from wInd3x
          */
@@ -115,6 +117,21 @@ int hook(void **state) {
             );
 
             memcpy(*state, &ret, sizeof(ret));
+            break;
+        }
+
+        case kHookCommandRead32: {
+            uint32_t addr = cmd->args[0];
+            *(volatile uint32_t *)(*state) = *(volatile uint32_t *)addr;
+
+            break;
+        }
+
+        case kHookCommandWrite32: {
+            uint32_t addr = cmd->args[0];
+            uint32_t val  = cmd->args[1];
+            *(volatile uint32_t *)addr = val;
+
             break;
         }
 
