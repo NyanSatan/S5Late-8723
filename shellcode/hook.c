@@ -41,14 +41,6 @@ __attribute__((packed)) struct cmd {
     uint32_t args[];
 };
 
-/* iPod shuffles do not use EFI */
-#if EFI
-#define EFI_FVH_OFFSET  0x28
-static const char efi_fvh_magic[] = {'_', 'F', 'V', 'H'};
-#else
-#define RESET_VECTOR    0xEA00000B
-#endif
-
 int hook(void **state) {
     /* The first pointer in the DFU state points to download buffer */
     struct cmd *cmd = *state;
@@ -126,22 +118,10 @@ int hook(void **state) {
             break;
         }
 
-        /*
-         * trying to see if host supplied us with something looking like 2nd-stage bootloader
-         *
-         * XXX redesign this mechanism to allow fully custom images to be loaded
-         * XXX what if image is not yet completely copied into load area?!
-         */
         default: {
-#if EFI
-            if (*(uint32_t *)(SRAM_BASE + EFI_FVH_OFFSET) == *(uint32_t *)efi_fvh_magic) {
-#else
-            if (*(uint32_t *)(SRAM_BASE) == RESET_VECTOR) {
-#endif
-                usb_shutdown();
-                state_set(1, 0);
-                prepare_and_jump(SRAM_BASE);
-            }
+            usb_shutdown();
+            state_set(1, 0);
+            prepare_and_jump(SRAM_BASE);
 
             return -1;
         }
