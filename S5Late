@@ -11,6 +11,8 @@ from enum import Enum
 
 import usb
 
+# ============================ Configuration ============================
+
 PlatformConfig = namedtuple("PlatformConfig", ["pid", "name", "config", "overwrite_len", "pwn_name", "fake_state", "magic_val"])
 
 PLATFORM_CONFIGS = [
@@ -64,6 +66,8 @@ AES_KEY_UID = 2
 
 SHELLCODE_ROOT = "shellcode/build"
 SHELLCODE_NAME = "shellcode.bin"
+
+# ============================ USB DFU code ============================
 
 class USBDFUError(Enum):
     errOk          = 0x00
@@ -189,7 +193,7 @@ class USBDFUDevice:
         return packets
 
     def request_image_validation(self, packets: int):
-        assert self.dev.ctrl_transfer(0x21, 1, packets + 1, 0, None, USB_TIMEOUT) == 0
+        assert self.dev.ctrl_transfer(0x21, 1, packets, 0, None, USB_TIMEOUT) == 0
         try:
             for _ in range(3):
                 self.dev.ctrl_transfer(0xA1, 3, 0, 0, 6, USB_TIMEOUT)
@@ -205,6 +209,8 @@ class USBDFUDevice:
         if self._open:
             self.close()
             self._open = False
+
+# =============================== Image1 ===============================
 
 class Image1:
     DATA_START_MAP = {
@@ -237,6 +243,8 @@ class Image1:
                 self.certlen
             )
 
+# ===================== High-level device routines =====================
+
 def device_pwned(dev: USBDFUDevice, config: PlatformConfig) -> bool:
     return dev.name() == config.pwn_name
 
@@ -257,13 +265,7 @@ def device_open(expect_pwned: bool = True) -> tuple[USBDFUDevice, PlatformConfig
 
     pwned = device_pwned(dev, platform)
 
-    print(
-        "found: %s USB %sDFU device" %
-        (
-            platform.name,
-            "pwn" if pwned else ""
-        )
-    )
+    print("found: %s USB %sDFU device" % (platform.name, "pwn" if pwned else ""))
 
     if expect_pwned and not pwned:
         raise ValueError("device is NOT pwned")
@@ -273,6 +275,8 @@ def device_open(expect_pwned: bool = True) -> tuple[USBDFUDevice, PlatformConfig
     dev.abort()
 
     return dev, platform
+
+# =========================== pwnDFU commands ===========================
 
 # Encodes a *command* to our DFU upload hook into raw bytes
 def cmd_encode(command: int, *args) -> bytes:
@@ -359,8 +363,7 @@ def aes_op(device: USBDFUDevice, cmd: int, key: int, buffer: bytes, iv: bytes = 
 
     end = time.perf_counter()
 
-    print(
-        "succesfully %s %d bytes in %.3f seconds (%.3f bytes/sec)" % (
+    print("successfully %s %d bytes in %.3f seconds (%d bytes/sec)" % (
             "decrypted" if cmd == COMMAND_AESDEC else "encrypted",
             total_len,
             end - start,
@@ -369,6 +372,17 @@ def aes_op(device: USBDFUDevice, cmd: int, key: int, buffer: bytes, iv: bytes = 
     )
 
     return ret
+
+def read32(dev: USBDFUDevice, addr: int) -> int:
+    cmd = cmd_encode(COMMAND_READ, addr)
+    raw_ret = cmd_send(dev, cmd, 4)
+    return int.from_bytes(raw_ret, "little")
+
+def write32(dev: USBDFUDevice, addr: int, value: int):
+    cmd = cmd_encode(COMMAND_WRITE, addr, value)
+    cmd_send(dev, cmd, 0)
+
+# ============================== CLI verbs ==============================
 
 def do_pwn(args):
     STATE_LEN    = 0x640
@@ -475,15 +489,7 @@ def do_dump(args):
         amount = min(args.length - index, UPLD_MAX_PACKET_SIZE)
 
         f.write(
-            cmd_send(
-                dev,
-                cmd_encode(
-                    COMMAND_DUMP,
-                    args.address + index,
-                    amount
-                ),
-                amount
-            )
+            cmd_send(dev, cmd_encode(COMMAND_DUMP, args.address + index, amount), amount)
         )
 
         index += amount
@@ -495,8 +501,7 @@ def do_dump(args):
 
     end = time.perf_counter()
 
-    print(
-        "succesfully dumped %d bytes in %.3f seconds (%.3f bytes/sec)" % (
+    print("succesfully dumped %d bytes in %.3f seconds (%d bytes/sec)" % (
             args.length,
             end - start,
             args.length / (end - start)
@@ -526,7 +531,9 @@ def do_aes(args):
         in_buf = f.read()
 
     with open(args.output, "wb") as f:
-        f.write(aes_op(dev, cmd, key, in_buf))
+        f.write(
+            aes_op(dev, cmd, key, in_buf)
+        )
 
     dev.close()
 
@@ -582,7 +589,6 @@ def do_call(args):
 
     dev.close()
 
-# this is a bit whacky, check the hook code for more info
 def do_boot(args):
     dev, _ = device_open()
 
@@ -620,9 +626,7 @@ def do_read(args):
 
     print("reading @ 0x%08x" % args.addr)
 
-    cmd = cmd_encode(COMMAND_READ, args.addr)
-    raw_ret = cmd_send(dev, cmd, 4)
-    ret = int.from_bytes(raw_ret, "little")
+    ret = read32(dev, args.addr)
 
     print("0x%08x" % ret)
 
@@ -633,8 +637,9 @@ def do_write(args):
 
     print("writing 0x%08x @ 0x%08x" % (args.value, args.addr))
 
-    cmd = cmd_encode(COMMAND_WRITE, args.addr, args.value)
-    cmd_send(dev, cmd, 0)
+    write32(dev, args.addr, args.value)
+
+    dev.close()
 
     dev.close()
 
