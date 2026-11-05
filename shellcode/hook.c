@@ -6,8 +6,7 @@
 
 #include <stddef.h>
 #include <stdbool.h>
-// that's what the baddest do!
-#include "libc.c"
+#include <config.h>
 
 // XXX length above this didn't work on S5L8442
 #define MAX_OUT_LEN 0x40
@@ -26,6 +25,8 @@ static void (*reboot)() __attribute__((noreturn)) = (void *)TARGET_REBOOT;
 
 static void (*aes_decrypt)(void *in, void *out, size_t len, int key, void *user_key, void *user_iv) = (void *)TARGET_AES_DECRYPT;
 static void (*aes_encrypt)(void *in, void *out, size_t len, int key, void *user_key, void *user_iv) = (void *)TARGET_AES_ENCRYPT;
+
+extern void *memcpy(void *dst, const void *src, size_t len);
 
 /* commands we accept, add more as needed */
 typedef enum {

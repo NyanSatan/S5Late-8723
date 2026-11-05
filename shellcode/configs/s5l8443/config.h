@@ -2,9 +2,19 @@
 #define CONFIG_H
 
 #include <stdint.h>
-#include <stddef.h>
 
-const uint8_t new_name_desc[] = {0x1E, 0x3, 'S', 0x0, '5', 0x0, 'L', 0x0, '8', 0x0, '4', 0x0, '4', 0x0, '3', 0x0, ' ', 0x0, 'p', 0x0, 'w', 0x0, 'n', 0x0, 'D', 0x0, 'F', 0x0, 'U', 0x0};
-const size_t  new_name_desc_len = sizeof(new_name_desc);
+#define EFI     0
+
+#define SRAM_BASE       0x22000000
+
+#define GLOBAL_OBJ_PTR  0x2202FFF8
+#define GLOBAL_OBJ_ADDR (*((volatile uintptr_t *)GLOBAL_OBJ_PTR))
+
+#define TARGET_USB_SHUTDOWN 0x20008BBC
+#define TARGET_STATE_SET    0x200031C8
+#define TARGET_REBOOT       0x200031B8
+#define TARGET_AES_DECRYPT  0x20001BC4
+#define TARGET_AES_ENCRYPT  0x20001C3C
+#define TARGET_JUMP         0x200031F4
 
 #endif

@@ -7,6 +7,8 @@
 #ifndef LIBC_C
 #define LIBC_C
 
+#include <stddef.h>
+
 void
 *memcpy(void *dst, const void *src, size_t len)
 {

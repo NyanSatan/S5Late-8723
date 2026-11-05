@@ -1,5 +1,5 @@
 @ Entry point of the post-exp - this is where we get to execute our own code
-@ 
+@
 @ The algorithm is pretty simple:
 @
 @ 1. Relocate our custom DFU upload hook to somewhere safe (hopefully)
@@ -14,6 +14,8 @@
 
 .text
 
+#include <config.S>
+
 @ there used to be a pool of constants,
 @ but now they are included by compiler
 
@@ -23,14 +25,15 @@
 
 _start:
     ldr r0, =BASE
-    ldr r1, L_hook
-    ldr r2, =_binary_hook_bin_size
+    ldr r1, =_hook_bin
+    ldr r2, =_hook_bin_len
+    ldr r2, [r2]
     mov r7, r0
     add r6, r0, r2
     bl memcpy
 
     mov r0, r6
-    ldr r1, L_new_name_desc
+    ldr r1, =new_name_desc
     ldr r2, =new_name_desc_len
     ldr r2, [r2]
     bl memcpy
@@ -54,9 +57,3 @@ _start:
 
     ldr r0, =usb_start
     bx r0
-
-L_hook:
-    .long _binary_hook_bin_start
-
-L_new_name_desc:
-    .long new_name_desc
