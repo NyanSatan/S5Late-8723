@@ -673,8 +673,8 @@ def main():
 
     call_parse = subparsers.add_parser("call", help="call arbitrary function")
     call_parse.set_defaults(func=do_call)
-    call_parse.add_argument("-f", "--addr", type=hexint, help="function pointer")
-    call_parse.add_argument("-a", "--args", type=hexint, nargs='*', help="arguments (up to 8)")
+    call_parse.add_argument("addr", type=hexint, help="function pointer")
+    call_parse.add_argument("args", type=hexint, nargs='*', help="arguments (up to 8)")
 
     boot_parse = subparsers.add_parser("boot", help="boot WTF from file")
     boot_parse.set_defaults(func=do_boot)

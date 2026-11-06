@@ -1,8 +1,6 @@
 # S5Late-8723
 
-***Important note**: this is a preliminary port of the exploit, use it on your own risk and always validate results it gives you*
-
-***Important note** (2): although this code is unlikely to permanently break anything, you still should be very careful. I'm not responsible for any possible damage this might cause*
+***Important note**: although this code is unlikely to permanently break anything, you still should be very careful. I'm not responsible for any possible damage this might cause*
 
 Implementation of [S5Late exploit](https://github.com/m-gsch/S5Late) by **@__gsch** for S5L8723 SoC which is used in iPod nano 6
 
@@ -141,7 +139,7 @@ Rebooting back into normal DFU:
 
 ```
 ➜  S5Late-8723 git:(master) ✗ ./S5Late reboot
-found: S5L8723 USB pwnDFU device                                                
+found: S5L8723 USB pwnDFU device
 DONE
 ```
 
@@ -168,12 +166,6 @@ This is a preliminary version of this exploit, so be careful with results yielde
 * AES operations are very slow - decrypting large payloads such as OSOS/retailOS (~9MB) takes around 15-25 minutes
 
 * Apparently padding in AES operations isn't handled properly, so for inputs not aligned to 16 bytes (AES block size) it might yield some garbage in the end of an output
-
-* Current implementation only boots EFI images on S5L8273 and `0B0000EA` reset vector instruction on S5L8443
-    * This can be fixed very easily by modifying the hook code
-
-* <s>iPod shuffle 4 fails to boot WTF for some unobvious reason</s> - apparently works now
-    * <s>Untethered bootloader seems to work fine though</s>
 
 ## Credits
 
