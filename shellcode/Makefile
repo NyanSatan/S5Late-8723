@@ -20,6 +20,7 @@ CFLAGS += -Os
 CFLAGS += -march=armv6
 CFLAGS += -fcall-used-r9
 CFLAGS += -ffunction-sections
+CFLAGS += -MMD
 
 LD := $(CC)
 LDFLAGS := -nostdlib
@@ -95,3 +96,5 @@ clean:
 	@echo "%%%%% cleaning"
 	$(shell rm -rf $(BUILD_ROOT))
 	@echo "%%%%% done cleaning"
+
+-include $(SHELLCODE_OBJECTS:.o=.d) $(HOOK_OBJECTS:.o=.d)
