@@ -222,11 +222,18 @@ class Image1:
     }
 
     def __init__(self, buffer: bytes):
-        self.magic = buffer[:4].decode("ascii")
+        try:
+            self.magic = buffer[:4].decode("ascii")
+        except UnicodeDecodeError:
+            raise ValueError("bad Image1 magic")
+
+        try:
+            self.dataoff = self.DATA_START_MAP[self.magic]
+        except KeyError:
+            raise ValueError("unknown Image1 magic")
+
         self.version = buffer[4:7].decode("ascii")
         self.type = struct.unpack("<B", buffer[7:8])[0]
-
-        self.dataoff = self.DATA_START_MAP[self.magic]
 
         (self.entrypoint, self.bodylen, self.datalen, self.certoff, self.certlen) = struct.unpack("<5I", buffer[8:28])
 
@@ -546,6 +553,10 @@ def do_image1(args):
     image1 = Image1(in_buf)
 
     print(image1)
+
+    if image1.type != 0x3:
+        print("this Image1 doesn't seem to be encrypted (type 0x%x)" % image1.type)
+        exit(-1)
 
     real_len = image1.bodylen
     padded_len = real_len
