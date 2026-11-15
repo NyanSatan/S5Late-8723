@@ -508,7 +508,7 @@ def do_dump(args):
 
     end = time.perf_counter()
 
-    print("succesfully dumped %d bytes in %.3f seconds (%d bytes/sec)" % (
+    print("successfully dumped %d bytes in %.3f seconds (%d bytes/sec)" % (
             args.length,
             end - start,
             args.length / (end - start)

@@ -3,8 +3,6 @@
 
 #include <stdint.h>
 
-#define EFI     1
-
 #define SRAM_BASE       0x22000000
 
 #define GLOBAL_OBJ_PTR  0x2202FFF8
